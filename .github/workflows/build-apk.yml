@@ -1,0 +1,89 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct and verify source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            source_chunks/part00.b64 \
+            source_chunks/part01.b64 \
+            source_chunks/part02.b64 \
+            source_chunks/part03.b64 \
+            source_chunks/part04.b64 \
+            source_chunks/part05.b64 \
+            source_chunks/part06.b64 \
+            source_chunks/part070.b64 \
+            source_chunks/part071.b64 \
+            source_chunks/part072.b64 \
+            source_chunks/part08.b64 > source.b64
+          base64 -d source.b64 > SHIB-Sentinel-source-v1.0.0.zip
+          echo "6e03d896c05ab0fa8f49456c44aafed3e6d0400055aa3797b909ad270f21c5f6  SHIB-Sentinel-source-v1.0.0.zip" | sha256sum -c -
+          unzip -q SHIB-Sentinel-source-v1.0.0.zip
+          test -f shib_sentinel/settings.gradle.kts
+          test -f shib_sentinel/app/src/main/java/com/nv/shibsentinel/SentinelService.kt
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: shib_sentinel/backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r shib_sentinel/backend/requirements.txt
+          pip install pytest==8.3.5
+
+      - name: Run backend tests
+        working-directory: shib_sentinel/backend
+        run: pytest -q
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Run Android unit tests
+        working-directory: shib_sentinel
+        run: gradle :app:testDebugUnitTest --stacktrace
+
+      - name: Build debug APK
+        working-directory: shib_sentinel
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Generate APK SHA-256
+        run: sha256sum shib_sentinel/app/build/outputs/apk/debug/app-debug.apk | tee app-debug.apk.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shib-sentinel-debug-apk
+          path: |
+            shib_sentinel/app/build/outputs/apk/debug/app-debug.apk
+            app-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 14
